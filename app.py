@@ -13,14 +13,19 @@ st.set_page_config(page_title="Hemodynamics Dashboard", layout="wide")
 # 1. Load and clean data
 # -----------------------------
 @st.cache_data
-def load_data():
-    df = pd.read_csv("REDCAallPatientsDATA.csv")
+def load_data(uploaded_file):
+    if uploaded_file is None:
+        return None
+    df = pd.read_csv(uploaded_file)
     df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
     df = df.loc[:, ~df.columns.duplicated()]
     return df
 
+uploaded_file = st.file_uploader("Upload REDCA CSV", type=["csv"])
+df = load_data(uploaded_file)
 
-df = load_data()
+if df is None:
+    st.stop()
 
 numeric_cols = df.select_dtypes(include="number").columns.tolist()
 
@@ -196,3 +201,4 @@ st.download_button(
     file_name=img_filename,
     mime="image/jpeg",
 )
+
