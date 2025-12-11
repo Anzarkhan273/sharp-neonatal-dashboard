@@ -21,7 +21,7 @@ def load_data():
     """
     possible_paths = [
         "REDCAallPatientsDATA.csv",
-        r"C:\Users\anzar\OneDrive\Desktop\hemo\REDCAallPatientsDATA.csv",
+       r"C:\Users\anzar\OneDrive\Desktop\hemo\REDCAallPatientsDATA.csv",
     ]
 
     df = None
@@ -276,3 +276,4 @@ st.download_button(
     file_name=img_filename,
     mime="image/jpeg",
 )
+
