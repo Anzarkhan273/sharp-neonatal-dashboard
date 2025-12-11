@@ -10,44 +10,64 @@ st.set_page_config(page_title="Hemodynamics Line + SD Dashboard", layout="wide")
 
 
 # -----------------------------
-# 1. Load and clean data
+# 1. Helper: read + clean CSV
 # -----------------------------
 @st.cache_data
-def load_data():
-    """
-    Try to load the CSV from:
-    - Current directory (for Streamlit Cloud / GitHub)
-    - Your local Windows path (for running on your laptop)
-    """
-    possible_paths = [
-        "REDCAallPatientsDATA.csv",
-       r"C:\Users\anzar\OneDrive\Desktop\hemo\REDCAallPatientsDATA.csv",
-    ]
-
-    df = None
-    for path in possible_paths:
-        try:
-            df = pd.read_csv(path)
-            break
-        except FileNotFoundError:
-            continue
-
-    if df is None:
-        st.error(
-            "Could not find 'REDCAallPatientsDATA.csv'.\n\n"
-            "Make sure the file is either:\n"
-            "- In the same folder as app.py in your GitHub repo, OR\n"
-            "- At C:\\Users\\anzar\\OneDrive\\Desktop\\hemo\\REDCAallPatientsDATA.csv on your laptop."
-        )
-        st.stop()
-
-    # Clean column names
+def read_and_clean(file_like):
+    """Read a CSV (path or file-like), clean column names, drop duplicates."""
+    df = pd.read_csv(file_like)
     df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
     df = df.loc[:, ~df.columns.duplicated()]
     return df
 
 
-df = load_data()
+# -----------------------------
+# 2. Load data: try paths, otherwise ask for upload
+# -----------------------------
+def get_data():
+    """
+    Try to load the CSV from:
+    - Current directory (for Streamlit Cloud / GitHub)
+    - Your local Windows path (for running on your laptop)
+    If not found, show a file uploader so the user can upload the CSV.
+    """
+    possible_paths = [
+        "REDCAallPatientsDATA.csv",
+        r"C:\Users\anzar\OneDrive\Desktop\hemo\REDCAallPatientsDATA.csv",
+    ]
+
+    df = None
+
+    # Try known paths first
+    for path in possible_paths:
+        try:
+            df = read_and_clean(path)
+            st.info(f"Loaded data from: `{path}`")
+            break
+        except FileNotFoundError:
+            continue
+
+    # If not found, let user upload
+    if df is None:
+        st.warning(
+            "Could not automatically find `REDCAallPatientsDATA.csv`.\n\n"
+            "Please upload the dataset (CSV file) below."
+        )
+        uploaded = st.file_uploader(
+            "Upload REDCAallPatientsDATA.csv",
+            type=["csv"],
+            accept_multiple_files=False,
+        )
+        if uploaded is not None:
+            df = read_and_clean(uploaded)
+            st.success("File uploaded and loaded successfully.")
+        else:
+            st.stop()
+
+    return df
+
+
+df = get_data()
 
 # Numeric columns (for X and Y)
 numeric_cols = df.select_dtypes(include="number").columns.tolist()
@@ -61,7 +81,7 @@ for c in df.columns:
 
 
 # -----------------------------
-# 2. Layout
+# 3. Layout
 # -----------------------------
 st.title("Neonatal Hemodynamics – Line Plot with SD and p-value")
 
@@ -73,13 +93,13 @@ This app shows a **single line** (mean Y vs X) with an optional **±1 SD band**.
 - Optionally turn on the **standard deviation band**.
 - Optionally pick a **group** (with 2 levels) to compute a **p-value** for Y.
 
-By default, only the **first 200 valid records** are used in this view, similar to your earlier setup.
+By default, only the **first 200 valid records** are used in this view (you can adjust it).
 """
 )
 
 
 # -----------------------------
-# 3. Sidebar controls
+# 4. Sidebar controls
 # -----------------------------
 st.sidebar.header("Controls")
 
@@ -122,7 +142,7 @@ row_limit = st.sidebar.number_input(
 
 
 # -----------------------------
-# 4. Prepare data (first N rows)
+# 5. Prepare data (first N rows)
 # -----------------------------
 cols = [x_col, y_col]
 if group_for_pvalue != "None":
@@ -136,7 +156,7 @@ if data.empty:
 
 
 # -----------------------------
-# 5. Compute stats (median, mode, p-value)
+# 6. Compute stats (median, mode, p-value)
 # -----------------------------
 y_series = data[y_col]
 median_val = y_series.median()
@@ -156,7 +176,7 @@ if group_for_pvalue != "None":
 
 
 # -----------------------------
-# 6. Plot: mean line + optional SD band
+# 7. Plot: mean line + optional SD band
 # -----------------------------
 fig, ax = plt.subplots(figsize=(8, 5))
 
@@ -219,13 +239,11 @@ ax.set_title(f"{y_col} vs {x_col} (first {len(data)} records)")
 ax.grid(alpha=0.25)
 
 plt.tight_layout()
-
-# Show in Streamlit
 st.pyplot(fig)
 
 
 # -----------------------------
-# 7. Show stats under the plot
+# 8. Show stats under the plot
 # -----------------------------
 st.markdown(
     f"""
@@ -248,7 +266,7 @@ if group_for_pvalue != "None":
 
 
 # -----------------------------
-# 8. Download buttons
+# 9. Download buttons
 # -----------------------------
 st.markdown("### Downloads")
 
@@ -276,4 +294,3 @@ st.download_button(
     file_name=img_filename,
     mime="image/jpeg",
 )
-
