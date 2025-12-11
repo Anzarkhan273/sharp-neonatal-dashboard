@@ -171,4 +171,108 @@ ax.plot(
     x_vals,
     y_mean,
     linewidth=2.0,
-    linestyle=
+    linestyle="-",
+    color="#E69F00",  # orange
+)
+
+# Optional SD band
+if show_sd:
+    y_lower = y_mean - y_sd
+    y_upper = y_mean + y_sd
+    ax.fill_between(
+        x_vals,
+        y_lower,
+        y_upper,
+        alpha=0.2,
+        color="#E69F00",
+    )
+
+# Label box at end of line
+last_x = x_vals[-1]
+last_y = y_mean[-1]
+x_range = x_vals[-1] - x_vals[0] if len(x_vals) > 1 else 1
+x_offset = 0.02 * x_range
+
+ax.text(
+    last_x + x_offset,
+    last_y,
+    y_col,
+    va="center",
+    fontsize=9,
+    color="white",
+    bbox=dict(
+        boxstyle="round,pad=0.3",
+        fc="#444444",
+        ec="#111111",
+        alpha=0.95,
+    ),
+)
+
+# Extend x-limits so label isn't cut off
+ax.set_xlim(x_vals[0], x_vals[-1] + 4 * x_offset)
+
+# Labels & title
+ax.set_xlabel(x_col)
+ax.set_ylabel(y_col)
+ax.set_title(f"{y_col} vs {x_col} (first {len(data)} records)")
+
+ax.grid(alpha=0.25)
+
+plt.tight_layout()
+
+# Show in Streamlit
+st.pyplot(fig)
+
+
+# -----------------------------
+# 7. Show stats under the plot
+# -----------------------------
+st.markdown(
+    f"""
+**Records used in this view:** {len(data)}  
+**Median of `{y_col}`:** {median_val:.2f}  
+**Mode of `{y_col}`:** {mode_val:.2f}  
+"""
+)
+
+if group_for_pvalue != "None":
+    st.write(f"Groups in `{group_for_pvalue}` (in this view): {groups_used}")
+    if p_val is not None:
+        st.write(
+            f"**p-value for `{y_col}` between `{groups_used[0]}` and `{groups_used[1]}`:** {p_val:.3f}"
+        )
+    else:
+        st.write(
+            "p-value not computed (need exactly 2 groups with enough data in each)."
+        )
+
+
+# -----------------------------
+# 8. Download buttons
+# -----------------------------
+st.markdown("### Downloads")
+
+# Data CSV
+csv_bytes = data.to_csv(index=False).encode("utf-8")
+csv_filename = f"{y_col.replace(' ', '_')}_vs_{x_col.replace(' ', '_')}.csv"
+
+st.download_button(
+    label="Download data (CSV)",
+    data=csv_bytes,
+    file_name=csv_filename,
+    mime="text/csv",
+)
+
+# Plot JPG
+img_buf = io.BytesIO()
+fig.savefig(img_buf, format="jpg", dpi=300, bbox_inches="tight")
+img_buf.seek(0)
+
+img_filename = f"{y_col.replace(' ', '_')}_vs_{x_col.replace(' ', '_')}.jpg"
+
+st.download_button(
+    label="Download plot (JPG)",
+    data=img_buf,
+    file_name=img_filename,
+    mime="image/jpeg",
+)
