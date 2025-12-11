@@ -73,7 +73,7 @@ This app shows a **single line** (mean Y vs X) with an optional **±1 SD band**.
 - Optionally turn on the **standard deviation band**.
 - Optionally pick a **group** (with 2 levels) to compute a **p-value** for Y.
 
-Only the **first 200 valid records** are used in this view, similar to your earlier setup.
+By default, only the **first 200 valid records** are used in this view, similar to your earlier setup.
 """
 )
 
@@ -122,7 +122,7 @@ row_limit = st.sidebar.number_input(
 
 
 # -----------------------------
-# 4. Prepare data (first 200)
+# 4. Prepare data (first N rows)
 # -----------------------------
 cols = [x_col, y_col]
 if group_for_pvalue != "None":
@@ -170,3 +170,5 @@ y_sd = grouped.std().values  # SD per X (can be NaN if only 1 record at a given 
 ax.plot(
     x_vals,
     y_mean,
+    linewidth=2.0,
+    linestyle=
