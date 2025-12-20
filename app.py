@@ -1,296 +1,200 @@
-import io
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.stats import ttest_ind
 import streamlit as st
 
-st.set_page_config(page_title="Hemodynamics Line + SD Dashboard", layout="wide")
+st.set_page_config(page_title="Neonatal Dashboard", layout="wide")
 
+# ----------------------------
+# Helpers
+# ----------------------------
+def nice_step(vmin: float, vmax: float) -> float:
+    span = max(vmax - vmin, 1e-9)
+    raw = span / 10.0
+    k = 10 ** np.floor(np.log10(raw))
+    candidates = np.array([1, 2, 5, 10], dtype=float) * k
+    return float(candidates[np.argmin(np.abs(candidates - raw))])
 
-# -----------------------------
-# 1. Helper: read + clean CSV
-# -----------------------------
-@st.cache_data
-def read_and_clean(file_like):
-    """Read a CSV (path or file-like), clean column names, drop duplicates."""
-    df = pd.read_csv(file_like)
+def compute_axis_defaults(df_plot: pd.DataFrame, xcol: str, ycol: str):
+    xv = df_plot[xcol].to_numpy(dtype=float)
+    yv = df_plot[ycol].to_numpy(dtype=float)
+    xmin, xmax = float(np.nanmin(xv)), float(np.nanmax(xv))
+    ymin, ymax = float(np.nanmin(yv)), float(np.nanmax(yv))
+    return xmin, xmax, nice_step(xmin, xmax), ymin, ymax, nice_step(ymin, ymax)
+
+def load_csv(uploaded_file):
+    if uploaded_file is None:
+        return None
+    df = pd.read_csv(uploaded_file)
     df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
     df = df.loc[:, ~df.columns.duplicated()]
     return df
 
+def plot_series(ax, sub_df: pd.DataFrame, xcol: str, ycol: str, show_sd: bool, label: str | None):
+    agg = (
+        sub_df.groupby(xcol)[ycol]
+        .agg(["mean", "std"])
+        .reset_index()
+        .sort_values(xcol)
+    )
+    xv = agg[xcol].to_numpy(dtype=float)
+    ym = agg["mean"].to_numpy(dtype=float)
+    ys = agg["std"].to_numpy(dtype=float)
 
-# -----------------------------
-# 2. Load data: try paths, otherwise ask for upload
-# -----------------------------
-def get_data():
-    """
-    Try to load the CSV from:
-    - Current directory (for Streamlit Cloud / GitHub)
-    - Your local Windows path (for running on your laptop)
-    If not found, show a file uploader so the user can upload the CSV.
-    """
-    possible_paths = [
-        "REDCAallPatientsDATA.csv",
-        r"C:\Users\anzar\OneDrive\Desktop\hemo\REDCAallPatientsDATA.csv",
-    ]
+    ax.plot(xv, ym, linewidth=2.5, label=label)
+    if show_sd:
+        ax.fill_between(xv, ym - ys, ym + ys, alpha=0.12)
 
-    df = None
-
-    # Try known paths first
-    for path in possible_paths:
-        try:
-            df = read_and_clean(path)
-            st.info(f"Loaded data from: `{path}`")
-            break
-        except FileNotFoundError:
-            continue
-
-    # If not found, let user upload
-    if df is None:
-        st.warning(
-            "Could not automatically find `REDCAallPatientsDATA.csv`.\n\n"
-            "Please upload the dataset (CSV file) below."
-        )
-        uploaded = st.file_uploader(
-            "Upload REDCAallPatientsDATA.csv",
-            type=["csv"],
-            accept_multiple_files=False,
-        )
-        if uploaded is not None:
-            df = read_and_clean(uploaded)
-            st.success("File uploaded and loaded successfully.")
-        else:
-            st.stop()
-
-    return df
-
-
-df = get_data()
-
-# Numeric columns (for X and Y)
-numeric_cols = df.select_dtypes(include="number").columns.tolist()
-
-# Grouping columns (for p-value) — small number of categories
-group_cols = []
-for c in df.columns:
-    nunique = df[c].nunique(dropna=False)
-    if 1 < nunique <= 15:
-        group_cols.append(c)
-
-
-# -----------------------------
-# 3. Layout
-# -----------------------------
-st.title("Neonatal Hemodynamics – Line Plot with SD and p-value")
-
-st.write(
-    """
-This app shows a **single line** (mean Y vs X) with an optional **±1 SD band**.
-
-- Choose **X** (numeric) and **Y** (numeric) on the sidebar.
-- Optionally turn on the **standard deviation band**.
-- Optionally pick a **group** (with 2 levels) to compute a **p-value** for Y.
-
-By default, only the **first 200 valid records** are used in this view (you can adjust it).
-"""
-)
-
-
-# -----------------------------
-# 4. Sidebar controls
-# -----------------------------
+# ----------------------------
+# Sidebar: Upload + controls
+# ----------------------------
 st.sidebar.header("Controls")
 
-if not numeric_cols:
-    st.error("No numeric columns found in the dataset.")
+uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+
+st.sidebar.caption("Tip: Upload the same REDCAallPatientsDATA.csv you used locally.")
+df_raw = load_csv(uploaded)
+
+if df_raw is None:
+    st.warning("Upload a CSV to begin.")
     st.stop()
 
-# Sensible defaults
-default_x = "Day of Life" if "Day of Life" in numeric_cols else numeric_cols[0]
-default_y = "SVC flow (mL/ kg/ min)" if "SVC flow (mL/ kg/ min)" in numeric_cols else numeric_cols[0]
-
-x_col = st.sidebar.selectbox(
-    "X-axis (numeric):",
-    options=numeric_cols,
-    index=numeric_cols.index(default_x) if default_x in numeric_cols else 0,
-)
-
-y_col = st.sidebar.selectbox(
-    "Y-axis (numeric):",
-    options=numeric_cols,
-    index=numeric_cols.index(default_y) if default_y in numeric_cols else 0,
-)
-
-show_sd = st.sidebar.checkbox("Show standard deviation band", value=False)
-
-group_for_pvalue = st.sidebar.selectbox(
-    "Group (for p-value, optional):",
-    options=["None"] + group_cols,
-    index=0,
-)
-
-st.sidebar.markdown("---")
-row_limit = st.sidebar.number_input(
-    "Max records to use",
-    min_value=50,
-    max_value=len(df),
-    value=min(200, len(df)),
-    step=50,
-)
-
-
-# -----------------------------
-# 5. Prepare data (first N rows)
-# -----------------------------
-cols = [x_col, y_col]
-if group_for_pvalue != "None":
-    cols.append(group_for_pvalue)
-
-data = df[cols].dropna().head(int(row_limit))
-
-if data.empty:
-    st.warning("No data available for this combination of X, Y, and group.")
+# Numeric & groupable cols
+numeric_cols = [c for c in df_raw.columns if pd.api.types.is_numeric_dtype(df_raw[c])]
+if len(numeric_cols) < 2:
+    st.error("Need at least 2 numeric columns to plot.")
     st.stop()
 
+group_cols = [c for c in df_raw.columns if 1 < df_raw[c].nunique(dropna=False) <= 15]
 
-# -----------------------------
-# 6. Compute stats (median, mode, p-value)
-# -----------------------------
-y_series = data[y_col]
-median_val = y_series.median()
-modes = y_series.mode()
-mode_val = modes.iloc[0] if len(modes) > 0 else np.nan
+def guess_x(cols):
+    for c in cols:
+        if "Gestation" in str(c):
+            return c
+    return cols[0]
 
-p_val = None
-groups_used = None
+def guess_y(cols):
+    for c in cols:
+        if ("SVC" in str(c)) and ("flow" in str(c)):
+            return c
+    return cols[1] if len(cols) > 1 else cols[0]
 
-if group_for_pvalue != "None":
-    groups_used = data[group_for_pvalue].unique()
-    if len(groups_used) == 2:
-        g1 = data[data[group_for_pvalue] == groups_used[0]][y_col]
-        g2 = data[data[group_for_pvalue] == groups_used[1]][y_col]
-        if len(g1) > 1 and len(g2) > 1:
-            _, p_val = ttest_ind(g1, g2, equal_var=False, nan_policy="omit")
+# Basic selectors
+xcol = st.sidebar.selectbox("X-axis", numeric_cols, index=numeric_cols.index(guess_x(numeric_cols)))
+ycol = st.sidebar.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(guess_y(numeric_cols)))
 
+group_choice = st.sidebar.selectbox("Group (optional)", ["(None)"] + group_cols, index=0)
+gcol = None if group_choice == "(None)" else group_choice
 
-# -----------------------------
-# 7. Plot: mean line + optional SD band
-# -----------------------------
-fig, ax = plt.subplots(figsize=(8, 5))
+show_sd = st.sidebar.checkbox("Show SD band", value=True)
+show_legend = st.sidebar.checkbox("Show legend (outside)", value=True)
 
-# Group by X in case there are repeated X values
-grouped = data.groupby(x_col)[y_col]
-x_vals = grouped.mean().index.values
-y_mean = grouped.mean().values
-y_sd = grouped.std().values  # SD per X (can be NaN if only 1 record at a given X)
+max_n = st.sidebar.slider("Max records (N)", min_value=50, max_value=int(len(df_raw)), value=min(500, int(len(df_raw))), step=50)
 
-# Main line (orange, solid)
-ax.plot(
-    x_vals,
-    y_mean,
-    linewidth=2.0,
-    linestyle="-",
-    color="#E69F00",  # orange
-)
+apply_axes = st.sidebar.checkbox("Apply axis controls", value=False)
 
-# Optional SD band
-if show_sd:
-    y_lower = y_mean - y_sd
-    y_upper = y_mean + y_sd
-    ax.fill_between(
-        x_vals,
-        y_lower,
-        y_upper,
-        alpha=0.2,
-        color="#E69F00",
-    )
+# ----------------------------
+# Build df_eligible & df_plot (Max N behaves by X sorting)
+# ----------------------------
+needed = [xcol, ycol] + ([gcol] if gcol else [])
+df_eligible = df_raw[needed].dropna()
 
-# Label box at end of line
-last_x = x_vals[-1]
-last_y = y_mean[-1]
-x_range = x_vals[-1] - x_vals[0] if len(x_vals) > 1 else 1
-x_offset = 0.02 * x_range
+# Key fix: Max N is based on X ordering, not file order
+df_plot = df_eligible.sort_values(xcol, kind="mergesort").head(int(max_n)).copy()
 
-ax.text(
-    last_x + x_offset,
-    last_y,
-    y_col,
-    va="center",
-    fontsize=9,
-    color="white",
-    bbox=dict(
-        boxstyle="round,pad=0.3",
-        fc="#444444",
-        ec="#111111",
-        alpha=0.95,
-    ),
-)
+rawN = df_raw.shape[0]
+eligN = df_eligible.shape[0]
+shownN = df_plot.shape[0]
 
-# Extend x-limits so label isn't cut off
-ax.set_xlim(x_vals[0], x_vals[-1] + 4 * x_offset)
+if shownN == 0:
+    st.error("No rows to plot after dropping missing values for selected columns.")
+    st.stop()
 
-# Labels & title
-ax.set_xlabel(x_col)
-ax.set_ylabel(y_col)
-ax.set_title(f"{y_col} vs {x_col} (first {len(data)} records)")
+# ----------------------------
+# Axis defaults + session state (so defaults are populated, but user edits persist)
+# ----------------------------
+xmin_d, xmax_d, xstep_d, ymin_d, ymax_d, ystep_d = compute_axis_defaults(df_plot, xcol, ycol)
 
-ax.grid(alpha=0.25)
+axis_key = f"{xcol}|{ycol}|{gcol}|{max_n}|{shownN}"
+if st.session_state.get("axis_key") != axis_key:
+    # Update defaults when graph context changes
+    st.session_state["axis_key"] = axis_key
+    st.session_state["xmin"] = xmin_d
+    st.session_state["xmax"] = xmax_d
+    st.session_state["xstep"] = xstep_d
+    st.session_state["ymin"] = ymin_d
+    st.session_state["ymax"] = ymax_d
+    st.session_state["ystep"] = ystep_d
 
-plt.tight_layout()
-st.pyplot(fig)
+with st.sidebar.expander("Axis controls (auto-filled defaults)", expanded=True):
+    col1, col2 = st.columns(2)
+    with col1:
+        xmin = st.number_input("X min", value=float(st.session_state["xmin"]))
+        xmax = st.number_input("X max", value=float(st.session_state["xmax"]))
+        xstep = st.number_input("X step", min_value=0.0, value=float(st.session_state["xstep"]))
+    with col2:
+        ymin = st.number_input("Y min", value=float(st.session_state["ymin"]))
+        ymax = st.number_input("Y max", value=float(st.session_state["ymax"]))
+        ystep = st.number_input("Y step", min_value=0.0, value=float(st.session_state["ystep"]))
 
+    # Persist user edits
+    st.session_state["xmin"] = xmin
+    st.session_state["xmax"] = xmax
+    st.session_state["xstep"] = xstep
+    st.session_state["ymin"] = ymin
+    st.session_state["ymax"] = ymax
+    st.session_state["ystep"] = ystep
 
-# -----------------------------
-# 8. Show stats under the plot
-# -----------------------------
-st.markdown(
-    f"""
-**Records used in this view:** {len(data)}  
-**Median of `{y_col}`:** {median_val:.2f}  
-**Mode of `{y_col}`:** {mode_val:.2f}  
-"""
-)
+    if st.button("Reset axis defaults"):
+        st.session_state["xmin"] = xmin_d
+        st.session_state["xmax"] = xmax_d
+        st.session_state["xstep"] = xstep_d
+        st.session_state["ymin"] = ymin_d
+        st.session_state["ymax"] = ymax_d
+        st.session_state["ystep"] = ystep_d
+        st.rerun()
 
-if group_for_pvalue != "None":
-    st.write(f"Groups in `{group_for_pvalue}` (in this view): {groups_used}")
-    if p_val is not None:
-        st.write(
-            f"**p-value for `{y_col}` between `{groups_used[0]}` and `{groups_used[1]}`:** {p_val:.3f}"
-        )
+# ----------------------------
+# Plot
+# ----------------------------
+st.title("Neonatal Hemodynamics Dashboard")
+
+fig, ax = plt.subplots(figsize=(11, 5))
+ax.grid(True, alpha=0.20)
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+
+if gcol:
+    for gval, gdf in df_plot.groupby(gcol):
+        plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval))
+else:
+    plot_series(ax, df_plot, xcol, ycol, show_sd, label=None)
+
+ax.set_title(f"{ycol} vs {xcol}  (shown N={shownN} / eligible N={eligN} / raw N={rawN})")
+ax.set_xlabel(xcol)
+ax.set_ylabel(ycol)
+
+# Apply axis controls
+if apply_axes:
+    errors = []
+    if not (xmax > xmin): errors.append("X max must be > X min")
+    if not (ymax > ymin): errors.append("Y max must be > Y min")
+    if not (xstep > 0): errors.append("X step must be > 0")
+    if not (ystep > 0): errors.append("Y step must be > 0")
+
+    if errors:
+        st.warning("Axis controls invalid:\n- " + "\n- ".join(errors))
     else:
-        st.write(
-            "p-value not computed (need exactly 2 groups with enough data in each)."
-        )
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax)
+        ax.set_xticks(np.arange(xmin, xmax + xstep, xstep))
+        ax.set_yticks(np.arange(ymin, ymax + ystep, ystep))
 
+# Legend outside (not on top)
+if gcol and show_legend:
+    ax.legend(title=gcol, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False)
+    fig.tight_layout(rect=[0, 0, 0.82, 1])
+else:
+    fig.tight_layout()
 
-# -----------------------------
-# 9. Download buttons
-# -----------------------------
-st.markdown("### Downloads")
-
-# Data CSV
-csv_bytes = data.to_csv(index=False).encode("utf-8")
-csv_filename = f"{y_col.replace(' ', '_')}_vs_{x_col.replace(' ', '_')}.csv"
-
-st.download_button(
-    label="Download data (CSV)",
-    data=csv_bytes,
-    file_name=csv_filename,
-    mime="text/csv",
-)
-
-# Plot JPG
-img_buf = io.BytesIO()
-fig.savefig(img_buf, format="jpg", dpi=300, bbox_inches="tight")
-img_buf.seek(0)
-
-img_filename = f"{y_col.replace(' ', '_')}_vs_{x_col.replace(' ', '_')}.jpg"
-
-st.download_button(
-    label="Download plot (JPG)",
-    data=img_buf,
-    file_name=img_filename,
-    mime="image/jpeg",
-)
+st.pyplot(fig)
