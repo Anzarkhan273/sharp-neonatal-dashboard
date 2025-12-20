@@ -100,6 +100,8 @@ def _guess_y(cols):
 
 xcol = st.sidebar.selectbox("X-axis", numeric_cols, index=numeric_cols.index(_guess_x(numeric_cols)))
 ycol = st.sidebar.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(_guess_y(numeric_cols)))
+bw_mode = st.sidebar.checkbox("B/W print mode (use line styles + markers)", value=False)
+
 
 group_choice = st.sidebar.selectbox("Group (optional)", ["(None)"] + group_cols, index=0)
 gcol = None if group_choice == "(None)" else group_choice
@@ -243,6 +245,7 @@ if gcol and show_legend:
 
 
 st.pyplot(fig, use_container_width=False)
+
 
 
 
