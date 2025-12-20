@@ -29,8 +29,17 @@ def _load_csv(uploaded_file) -> pd.DataFrame:
     df = df.loc[:, ~df.columns.duplicated()]
     return df
 
-
-def _plot_series(ax, sub_df: pd.DataFrame, xcol: str, ycol: str, show_sd: bool, label: str | None):
+def _plot_series(
+    ax,
+    sub_df: pd.DataFrame,
+    xcol: str,
+    ycol: str,
+    show_sd: bool,
+    label: str | None,
+    color: str | None = None,
+    linestyle: str = "-",
+    marker: str | None = None,
+):
     agg = (
         sub_df.groupby(xcol)[ycol]
         .agg(["mean", "std"])
@@ -42,10 +51,20 @@ def _plot_series(ax, sub_df: pd.DataFrame, xcol: str, ycol: str, show_sd: bool, 
     ym = agg["mean"].to_numpy(dtype=float)
     ys = agg["std"].to_numpy(dtype=float)
 
-    ax.plot(xv, ym, linewidth=2.5, label=label)
+    ax.plot(
+        xv, ym,
+        linewidth=2.5,
+        label=label,
+        color=color,
+        linestyle=linestyle,
+        marker=marker,
+        markersize=4 if marker else 0,
+        markevery=max(1, len(xv)//12)  # keeps markers readable
+    )
 
     if show_sd:
-        ax.fill_between(xv, ym - ys, ym + ys, alpha=0.12)
+        ax.fill_between(xv, ym - ys, ym + ys, alpha=0.12, color=color)
+
 
 
 st.sidebar.header("Controls")
@@ -84,6 +103,7 @@ ycol = st.sidebar.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(_gu
 
 group_choice = st.sidebar.selectbox("Group (optional)", ["(None)"] + group_cols, index=0)
 gcol = None if group_choice == "(None)" else group_choice
+bw_mode = st.sidebar.checkbox("B/W print mode (use line styles + markers)", value=False)
 
 show_sd = st.sidebar.checkbox("Show SD band", value=True)
 show_legend = st.sidebar.checkbox("Show legend (outside)", value=True)
@@ -171,10 +191,26 @@ ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 
 if gcol:
-    for gval, gdf in df_plot.groupby(gcol):
-        _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval))
+    linestyles = ["-", "--", ":", "-."]              # solid, dashed, dotted, dash-dot
+    markers = ["o", "s", "^", "D", "X", "P", "v"]     # circle, square, triangle, etc.
+
+    groups = list(df_plot.groupby(gcol))
+    for i, (gval, gdf) in enumerate(groups):
+        ls = linestyles[i % len(linestyles)]
+        mk = markers[i % len(markers)]
+
+        # In B/W mode: force black and use linestyle+marker to differentiate
+        if bw_mode:
+            _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval),
+                         color="black", linestyle=ls, marker=mk)
+        else:
+            # In color mode: keep default matplotlib colors, still add linestyle for clarity
+            _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval),
+                         color=None, linestyle=ls, marker=None)
 else:
-    _plot_series(ax, df_plot, xcol, ycol, show_sd, label=None)
+    _plot_series(ax, df_plot, xcol, ycol, show_sd, label=None,
+                 color="black" if bw_mode else None, linestyle="-", marker=None)
+
 
 ax.set_title(f"{ycol} vs {xcol}  (shown N={shownN} / eligible N={eligN} / raw N={rawN})")
 ax.set_xlabel(xcol)
@@ -208,5 +244,6 @@ if gcol and show_legend:
 
 
 st.pyplot(fig, use_container_width=False)
+
 
 
