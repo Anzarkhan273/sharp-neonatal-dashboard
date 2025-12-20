@@ -103,7 +103,6 @@ ycol = st.sidebar.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(_gu
 
 group_choice = st.sidebar.selectbox("Group (optional)", ["(None)"] + group_cols, index=0)
 gcol = None if group_choice == "(None)" else group_choice
-bw_mode = st.sidebar.checkbox("B/W print mode (use line styles + markers)", value=False)
 
 show_sd = st.sidebar.checkbox("Show SD band", value=True)
 show_legend = st.sidebar.checkbox("Show legend (outside)", value=True)
@@ -244,6 +243,7 @@ if gcol and show_legend:
 
 
 st.pyplot(fig, use_container_width=False)
+
 
 
 
