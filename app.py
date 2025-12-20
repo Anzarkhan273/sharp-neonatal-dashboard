@@ -199,10 +199,14 @@ if apply_axes:
         ax.set_xticks(np.arange(xmin, xmax + xstep, xstep))
         ax.set_yticks(np.arange(ymin, ymax + ystep, ystep))
 
+# Always reserve the same right-side space so plot size stays consistent
+fig.subplots_adjust(left=0.08, right=0.82, top=0.88, bottom=0.18)
+
+# Legend outside (optional) — does not change plot size now
 if gcol and show_legend:
     ax.legend(title=gcol, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False)
-    fig.tight_layout(rect=[0, 0, 0.82, 1])
-else:
-    fig.tight_layout()
 
-st.pyplot(fig)
+
+st.pyplot(fig, use_container_width=False)
+
+
