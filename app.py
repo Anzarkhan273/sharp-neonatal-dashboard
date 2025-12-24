@@ -2,10 +2,9 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
-
-# NEW: for mixed overlap color + combinations
 import matplotlib.colors as mcolors
 import itertools
+import io
 
 st.set_page_config(page_title="Neonatal Dashboard", layout="wide")
 
@@ -293,5 +292,16 @@ if gcol and show_legend:
     handles, labels = ax.get_legend_handles_labels()
     ax_leg.legend(handles, labels, title=gcol, loc="upper left", frameon=False, fontsize=9)
 
+buf = io.BytesIO()
+fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
+buf.seek(0)
+
+st.sidebar.download_button(
+    label="Download plot (PNG)",
+    data=buf,
+    file_name="neonatal_plot.png",
+    mime="image/png",
+)
 # Use container width so it looks consistent in Streamlit
 st.pyplot(fig, use_container_width=True)
+
