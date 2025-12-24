@@ -3,6 +3,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
+# ✅ NEW imports (small)
+import matplotlib.colors as mcolors
+import itertools
+
 st.set_page_config(page_title="Neonatal Dashboard", layout="wide")
 
 
@@ -29,6 +33,14 @@ def _load_csv(uploaded_file) -> pd.DataFrame:
     df = df.loc[:, ~df.columns.duplicated()]
     return df
 
+
+# ✅ NEW small helper (color mixing for overlap)
+def _mix_colors(c1, c2):
+    r1 = np.array(mcolors.to_rgb(c1), dtype=float)
+    r2 = np.array(mcolors.to_rgb(c2), dtype=float)
+    return tuple((r1 + r2) / 2.0)
+
+
 def _plot_series(
     ax,
     sub_df: pd.DataFrame,
@@ -51,20 +63,29 @@ def _plot_series(
     ym = agg["mean"].to_numpy(dtype=float)
     ys = agg["std"].to_numpy(dtype=float)
 
-    ax.plot(
+    # ✅ change: capture the line so we can read its true color
+    (ln,) = ax.plot(
         xv, ym,
         linewidth=2.5,
         label=label,
-        color=color,
+        color=color,          # if None, matplotlib auto picks
         linestyle=linestyle,
         marker=marker,
         markersize=4 if marker else 0,
-        markevery=max(1, len(xv)//12)  # keeps markers readable
+        markevery=max(1, len(xv)//12)
     )
 
-    if show_sd:
-        ax.fill_between(xv, ym - ys, ym + ys, alpha=0.12, color=color)
+    # ✅ band color must match the line color (even when color=None)
+    line_color = ln.get_color() if color is None else color
 
+    band_info = None
+    if show_sd:
+        lower = ym - ys
+        upper = ym + ys
+        ax.fill_between(xv, lower, upper, alpha=0.12, color=line_color, linewidth=0)
+        band_info = {"x": xv, "lower": lower, "upper": upper, "color": line_color}
+
+    return band_info
 
 
 st.sidebar.header("Controls")
@@ -102,7 +123,6 @@ xcol = st.sidebar.selectbox("X-axis", numeric_cols, index=numeric_cols.index(_gu
 ycol = st.sidebar.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(_guess_y(numeric_cols)))
 bw_mode = st.sidebar.checkbox("B/W print mode (use line styles + markers)", value=False)
 
-
 group_choice = st.sidebar.selectbox("Group (optional)", ["(None)"] + group_cols, index=0)
 gcol = None if group_choice == "(None)" else group_choice
 
@@ -111,7 +131,7 @@ show_legend = st.sidebar.checkbox("Show legend (outside)", value=True)
 
 apply_axes = st.sidebar.checkbox("Apply axis controls", value=False)
 
-# Eligibility first (explains your 'stuck at 462' issue)
+# Eligibility first
 needed = [xcol, ycol] + ([gcol] if gcol else [])
 df_eligible = df_raw[needed].dropna()
 
@@ -135,7 +155,6 @@ max_n = st.sidebar.slider(
     step=step,
 )
 
-# Max N is based on X ordering (Record ID behavior)
 df_plot = df_eligible.sort_values(xcol, kind="mergesort").head(int(max_n)).copy()
 shownN = int(df_plot.shape[0])
 
@@ -144,7 +163,7 @@ with st.sidebar.expander("Counts", expanded=False):
     st.write(f"Eligible N (non-missing for selected columns): {eligN}")
     st.write(f"Shown N: {shownN}")
 
-# Axis defaults that auto-fill, but keep user edits
+# Axis defaults
 xmin_d, xmax_d, xstep_d, ymin_d, ymax_d, ystep_d = _compute_axis_defaults(df_plot, xcol, ycol)
 
 axis_key = f"{xcol}|{ycol}|{gcol}|{shownN}|{eligN}"
@@ -186,34 +205,62 @@ with st.sidebar.expander("Axis controls (auto-filled defaults)", expanded=True):
 
 st.title("Neonatal Hemodynamics Dashboard")
 
+# ✅ NEW: title textbox (default title already filled in)
+default_title = f"{ycol} vs {xcol}  (shown N={shownN} / eligible N={eligN} / raw N={rawN})"
+plot_title = st.sidebar.text_input("Plot title", value=default_title)
+
 fig, ax = plt.subplots(figsize=(11, 5))
 ax.grid(True, alpha=0.20)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 
+band_infos = []  # ✅ collect bands for overlap shading
+
 if gcol:
-    linestyles = ["-", "--", ":", "-."]              # solid, dashed, dotted, dash-dot
-    markers = ["o", "s", "^", "D", "X", "P", "v"]     # circle, square, triangle, etc.
+    linestyles = ["-", "--", ":", "-."]
+    markers = ["o", "s", "^", "D", "X", "P", "v"]
 
     groups = list(df_plot.groupby(gcol))
     for i, (gval, gdf) in enumerate(groups):
         ls = linestyles[i % len(linestyles)]
         mk = markers[i % len(markers)]
 
-        # In B/W mode: force black and use linestyle+marker to differentiate
         if bw_mode:
-            _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval),
-                         color="black", linestyle=ls, marker=mk)
+            info = _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval),
+                                color="black", linestyle=ls, marker=mk)
         else:
-            # In color mode: keep default matplotlib colors, still add linestyle for clarity
-            _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval),
-                         color=None, linestyle=ls, marker=None)
+            info = _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval),
+                                color=None, linestyle=ls, marker=None)
+
+        if info is not None:
+            info["label"] = str(gval)
+            band_infos.append(info)
+
+    # ✅ NEW: overlap shading (mixed color)
+    if show_sd and len(band_infos) >= 2:
+        for a, b in itertools.combinations(band_infos, 2):
+            # align on common x values
+            dfa = pd.DataFrame({"x": a["x"], "la": a["lower"], "ua": a["upper"]})
+            dfb = pd.DataFrame({"x": b["x"], "lb": b["lower"], "ub": b["upper"]})
+            m = dfa.merge(dfb, on="x", how="inner").sort_values("x")
+            if m.empty:
+                continue
+
+            x = m["x"].to_numpy(dtype=float)
+            lo = np.maximum(m["la"].to_numpy(dtype=float), m["lb"].to_numpy(dtype=float))
+            hi = np.minimum(m["ua"].to_numpy(dtype=float), m["ub"].to_numpy(dtype=float))
+            mask = hi > lo
+
+            if np.any(mask):
+                mix_c = "0.35" if bw_mode else _mix_colors(a["color"], b["color"])
+                ax.fill_between(x, lo, hi, where=mask, color=mix_c, alpha=0.22, linewidth=0, zorder=2)
+
 else:
     _plot_series(ax, df_plot, xcol, ycol, show_sd, label=None,
                  color="black" if bw_mode else None, linestyle="-", marker=None)
 
-
-ax.set_title(f"{ycol} vs {xcol}  (shown N={shownN} / eligible N={eligN} / raw N={rawN})")
+# ✅ use editable title
+ax.set_title(plot_title)
 ax.set_xlabel(xcol)
 ax.set_ylabel(ycol)
 
@@ -236,17 +283,10 @@ if apply_axes:
         ax.set_xticks(np.arange(xmin, xmax + xstep, xstep))
         ax.set_yticks(np.arange(ymin, ymax + ystep, ystep))
 
-# Always reserve the same right-side space so plot size stays consistent
+# ✅ legend width fixed: plot area always reserved
 fig.subplots_adjust(left=0.08, right=0.82, top=0.88, bottom=0.18)
 
-# Legend outside (optional) — does not change plot size now
 if gcol and show_legend:
     ax.legend(title=gcol, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False)
 
-
 st.pyplot(fig, use_container_width=False)
-
-
-
-
-
