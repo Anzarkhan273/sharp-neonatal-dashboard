@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
-# ✅ NEW imports (small)
+# NEW: for mixed overlap color + combinations
 import matplotlib.colors as mcolors
 import itertools
 
@@ -34,8 +34,8 @@ def _load_csv(uploaded_file) -> pd.DataFrame:
     return df
 
 
-# ✅ NEW small helper (color mixing for overlap)
 def _mix_colors(c1, c2):
+    """Average two colors -> mixed color for overlap."""
     r1 = np.array(mcolors.to_rgb(c1), dtype=float)
     r2 = np.array(mcolors.to_rgb(c2), dtype=float)
     return tuple((r1 + r2) / 2.0)
@@ -63,27 +63,28 @@ def _plot_series(
     ym = agg["mean"].to_numpy(dtype=float)
     ys = agg["std"].to_numpy(dtype=float)
 
-    # ✅ change: capture the line so we can read its true color
+    # Capture the line so we can read its true color even when color=None
     (ln,) = ax.plot(
         xv, ym,
         linewidth=2.5,
         label=label,
-        color=color,          # if None, matplotlib auto picks
+        color=color,          # if None, matplotlib auto-assigns
         linestyle=linestyle,
         marker=marker,
         markersize=4 if marker else 0,
-        markevery=max(1, len(xv)//12)
+        markevery=max(1, len(xv)//12),
+        zorder=3
     )
 
-    # ✅ band color must match the line color (even when color=None)
+    # Band must match line color (even when color=None)
     line_color = ln.get_color() if color is None else color
 
     band_info = None
     if show_sd:
         lower = ym - ys
         upper = ym + ys
-        ax.fill_between(xv, lower, upper, alpha=0.12, color=line_color, linewidth=0)
-        band_info = {"x": xv, "lower": lower, "upper": upper, "color": line_color}
+        ax.fill_between(xv, lower, upper, alpha=0.12, color=line_color, linewidth=0, zorder=1)
+        band_info = {"x": xv, "lower": lower, "upper": upper, "color": line_color, "label": label}
 
     return band_info
 
@@ -205,16 +206,23 @@ with st.sidebar.expander("Axis controls (auto-filled defaults)", expanded=True):
 
 st.title("Neonatal Hemodynamics Dashboard")
 
-# ✅ NEW: title textbox (default title already filled in)
+# NEW: title textbox with default title shown
 default_title = f"{ycol} vs {xcol}  (shown N={shownN} / eligible N={eligN} / raw N={rawN})"
 plot_title = st.sidebar.text_input("Plot title", value=default_title)
 
-fig, ax = plt.subplots(figsize=(11, 5))
+# ===== FIXED LAYOUT: plot + legend in separate fixed panels =====
+fig = plt.figure(figsize=(11, 5))
+gs = fig.add_gridspec(1, 2, width_ratios=[4.8, 1.6], wspace=0.02)
+
+ax = fig.add_subplot(gs[0, 0])       # main plot
+ax_leg = fig.add_subplot(gs[0, 1])   # legend panel (fixed width)
+ax_leg.axis("off")                   # hide legend panel axes
+
 ax.grid(True, alpha=0.20)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 
-band_infos = []  # ✅ collect bands for overlap shading
+band_infos = []
 
 if gcol:
     linestyles = ["-", "--", ":", "-."]
@@ -233,13 +241,11 @@ if gcol:
                                 color=None, linestyle=ls, marker=None)
 
         if info is not None:
-            info["label"] = str(gval)
             band_infos.append(info)
 
-    # ✅ NEW: overlap shading (mixed color)
+    # NEW: overlap shading (mixed color)
     if show_sd and len(band_infos) >= 2:
         for a, b in itertools.combinations(band_infos, 2):
-            # align on common x values
             dfa = pd.DataFrame({"x": a["x"], "la": a["lower"], "ua": a["upper"]})
             dfb = pd.DataFrame({"x": b["x"], "lb": b["lower"], "ub": b["upper"]})
             m = dfa.merge(dfb, on="x", how="inner").sort_values("x")
@@ -259,7 +265,6 @@ else:
     _plot_series(ax, df_plot, xcol, ycol, show_sd, label=None,
                  color="black" if bw_mode else None, linestyle="-", marker=None)
 
-# ✅ use editable title
 ax.set_title(plot_title)
 ax.set_xlabel(xcol)
 ax.set_ylabel(ycol)
@@ -283,10 +288,10 @@ if apply_axes:
         ax.set_xticks(np.arange(xmin, xmax + xstep, xstep))
         ax.set_yticks(np.arange(ymin, ymax + ystep, ystep))
 
-# ✅ legend width fixed: plot area always reserved
-fig.subplots_adjust(left=0.08, right=0.82, top=0.88, bottom=0.18)
-
+# Legend goes in fixed right panel (so plot never changes width)
 if gcol and show_legend:
-    ax.legend(title=gcol, loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False)
+    handles, labels = ax.get_legend_handles_labels()
+    ax_leg.legend(handles, labels, title=gcol, loc="upper left", frameon=False, fontsize=9)
 
-st.pyplot(fig, use_container_width=False)
+# Use container width so it looks consistent in Streamlit
+st.pyplot(fig, use_container_width=True)
