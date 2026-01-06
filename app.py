@@ -8,6 +8,12 @@ import io
 
 st.set_page_config(page_title="Neonatal Dashboard", layout="wide")
 
+# =========================
+# SETTINGS (per Shashank)
+# =========================
+MIN_N_PER_POINT_DEFAULT = 10   # omit points with N < 10
+TITLE_PAD_DEFAULT = 18         # add whitespace between title and top ticks
+
 
 def _nice_step(vmin: float, vmax: float) -> float:
     """Return a human-friendly tick step (~10 ticks across the axis)."""
@@ -50,19 +56,34 @@ def _plot_series(
     color: str | None = None,
     linestyle: str = "-",
     marker: str | None = None,
+    min_n_per_point: int = 10,   # NEW: omit points with N < min_n_per_point
 ):
+    """
+    Plot mean line + (optional) SD band for ycol grouped by xcol.
+
+    Per Shashank:
+    - If N < min_n_per_point for a given x, omit it (mean/std -> NaN => line breaks).
+    - SD band naturally disappears where SD is NaN (e.g., N < 2) or where point omitted.
+    """
     agg = (
         sub_df.groupby(xcol)[ycol]
-        .agg(["mean", "std"])
+        .agg(mean="mean", std="std", n="count")   # NEW: include n
         .reset_index()
         .sort_values(xcol)
     )
+
+    # Omit unreliable points (N < threshold)
+    too_small = agg["n"] < int(min_n_per_point)
+    agg.loc[too_small, ["mean", "std"]] = np.nan
+
+    # Also ensure SD isn't used when N < 2 (std is undefined)
+    agg.loc[agg["n"] < 2, "std"] = np.nan
 
     xv = agg[xcol].to_numpy(dtype=float)
     ym = agg["mean"].to_numpy(dtype=float)
     ys = agg["std"].to_numpy(dtype=float)
 
-    # Capture the line so we can read its true color even when color=None
+    # Plot mean line (NaNs -> gaps automatically)
     (ln,) = ax.plot(
         xv, ym,
         linewidth=2.5,
@@ -82,12 +103,26 @@ def _plot_series(
     if show_sd:
         lower = ym - ys
         upper = ym + ys
-        ax.fill_between(xv, lower, upper, alpha=0.12, color=line_color, linewidth=0, zorder=1)
+
+        # Only fill where values are finite (prevents weird artifacts)
+        finite = np.isfinite(xv) & np.isfinite(lower) & np.isfinite(upper)
+
+        ax.fill_between(
+            xv, lower, upper,
+            where=finite,
+            alpha=0.12,
+            color=line_color,
+            linewidth=0,
+            zorder=1
+        )
         band_info = {"x": xv, "lower": lower, "upper": upper, "color": line_color, "label": label}
 
     return band_info
 
 
+# =========================
+# UI CONTROLS
+# =========================
 st.sidebar.header("Controls")
 uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
 
@@ -128,8 +163,23 @@ gcol = None if group_choice == "(None)" else group_choice
 
 show_sd = st.sidebar.checkbox("Show SD band", value=True)
 show_legend = st.sidebar.checkbox("Show legend (outside)", value=True)
-
 apply_axes = st.sidebar.checkbox("Apply axis controls", value=False)
+
+# NEW: enforce Shashank min-N (default 10)
+min_n_per_point = st.sidebar.number_input(
+    "Min samples per x-point (omit if N < ...)",
+    min_value=1,
+    value=MIN_N_PER_POINT_DEFAULT,
+    step=1
+)
+
+# NEW: title padding control (default 18)
+title_pad = st.sidebar.number_input(
+    "Title padding (whitespace above plot)",
+    min_value=0,
+    value=TITLE_PAD_DEFAULT,
+    step=1
+)
 
 # Eligibility first
 needed = [xcol, ycol] + ([gcol] if gcol else [])
@@ -163,9 +213,9 @@ with st.sidebar.expander("Counts", expanded=False):
     st.write(f"Eligible N (non-missing for selected columns): {eligN}")
     st.write(f"Shown N: {shownN}")
 
-# ===================== NEW: FIND IF N < 10 (especially after 31 weeks) =====================
-with st.sidebar.expander("Check N per week (find N < 10)", expanded=True):
-    cutoff = 31  # change this if you want
+# NEW: quick N table to verify where N < 10
+with st.sidebar.expander("Check N per week (verify N < 10)", expanded=False):
+    cutoff = st.number_input("Show N table for x >= ", value=31, step=1)
     if gcol:
         n_table = (
             df_plot.groupby([gcol, xcol])[ycol]
@@ -173,11 +223,11 @@ with st.sidebar.expander("Check N per week (find N < 10)", expanded=True):
             .reset_index(name="N")
             .sort_values([gcol, xcol])
         )
-        st.write(f"N by group and {xcol} (showing {xcol} >= {cutoff})")
+        st.write(f"N by group and {xcol} (x >= {cutoff})")
         st.dataframe(n_table[n_table[xcol] >= cutoff], use_container_width=True)
 
-        st.write("Rows where N < 10 (all weeks):")
-        st.dataframe(n_table[n_table["N"] < 10], use_container_width=True)
+        st.write("Rows where N < min threshold:")
+        st.dataframe(n_table[n_table["N"] < int(min_n_per_point)], use_container_width=True)
     else:
         n_table = (
             df_plot.groupby(xcol)[ycol]
@@ -185,11 +235,11 @@ with st.sidebar.expander("Check N per week (find N < 10)", expanded=True):
             .reset_index(name="N")
             .sort_values(xcol)
         )
-        st.write(f"N by {xcol} (showing {xcol} >= {cutoff})")
+        st.write(f"N by {xcol} (x >= {cutoff})")
         st.dataframe(n_table[n_table[xcol] >= cutoff], use_container_width=True)
 
-        st.write("Rows where N < 10 (all weeks):")
-        st.dataframe(n_table[n_table["N"] < 10], use_container_width=True)
+        st.write("Rows where N < min threshold:")
+        st.dataframe(n_table[n_table["N"] < int(min_n_per_point)], use_container_width=True)
 
 # Axis defaults
 xmin_d, xmax_d, xstep_d, ymin_d, ymax_d, ystep_d = _compute_axis_defaults(df_plot, xcol, ycol)
@@ -233,7 +283,6 @@ with st.sidebar.expander("Axis controls (auto-filled defaults)", expanded=True):
 
 st.title("Neonatal Hemodynamics Dashboard")
 
-# Title textbox with default title shown
 default_title = f"{ycol} vs {xcol}  (shown N={shownN} / eligible N={eligN} / raw N={rawN})"
 plot_title = st.sidebar.text_input("Plot title", value=default_title)
 
@@ -261,11 +310,17 @@ if gcol:
         mk = markers[i % len(markers)]
 
         if bw_mode:
-            info = _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval),
-                                color="black", linestyle=ls, marker=mk)
+            info = _plot_series(
+                ax, gdf, xcol, ycol, show_sd, label=str(gval),
+                color="black", linestyle=ls, marker=mk,
+                min_n_per_point=int(min_n_per_point)
+            )
         else:
-            info = _plot_series(ax, gdf, xcol, ycol, show_sd, label=str(gval),
-                                color=None, linestyle=ls, marker=None)
+            info = _plot_series(
+                ax, gdf, xcol, ycol, show_sd, label=str(gval),
+                color=None, linestyle=ls, marker=None,
+                min_n_per_point=int(min_n_per_point)
+            )
 
         if info is not None:
             band_infos.append(info)
@@ -282,17 +337,23 @@ if gcol:
             x = m["x"].to_numpy(dtype=float)
             lo = np.maximum(m["la"].to_numpy(dtype=float), m["lb"].to_numpy(dtype=float))
             hi = np.minimum(m["ua"].to_numpy(dtype=float), m["ub"].to_numpy(dtype=float))
-            mask = hi > lo
+
+            mask = np.isfinite(lo) & np.isfinite(hi) & (hi > lo)
 
             if np.any(mask):
                 mix_c = "0.35" if bw_mode else _mix_colors(a["color"], b["color"])
                 ax.fill_between(x, lo, hi, where=mask, color=mix_c, alpha=0.22, linewidth=0, zorder=2)
 
 else:
-    _plot_series(ax, df_plot, xcol, ycol, show_sd, label=None,
-                 color="black" if bw_mode else None, linestyle="-", marker=None)
+    _plot_series(
+        ax, df_plot, xcol, ycol, show_sd, label=None,
+        color="black" if bw_mode else None, linestyle="-", marker=None,
+        min_n_per_point=int(min_n_per_point)
+    )
 
-ax.set_title(plot_title)
+# NEW: title padding so top tick doesn't crowd title text
+ax.set_title(plot_title, pad=float(title_pad))
+
 ax.set_xlabel(xcol)
 ax.set_ylabel(ycol)
 
@@ -331,5 +392,4 @@ st.sidebar.download_button(
     mime="image/png",
 )
 
-# Use container width so it looks consistent in Streamlit
 st.pyplot(fig, use_container_width=True)
