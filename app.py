@@ -163,6 +163,34 @@ with st.sidebar.expander("Counts", expanded=False):
     st.write(f"Eligible N (non-missing for selected columns): {eligN}")
     st.write(f"Shown N: {shownN}")
 
+# ===================== NEW: FIND IF N < 10 (especially after 31 weeks) =====================
+with st.sidebar.expander("Check N per week (find N < 10)", expanded=True):
+    cutoff = 31  # change this if you want
+    if gcol:
+        n_table = (
+            df_plot.groupby([gcol, xcol])[ycol]
+            .count()
+            .reset_index(name="N")
+            .sort_values([gcol, xcol])
+        )
+        st.write(f"N by group and {xcol} (showing {xcol} >= {cutoff})")
+        st.dataframe(n_table[n_table[xcol] >= cutoff], use_container_width=True)
+
+        st.write("Rows where N < 10 (all weeks):")
+        st.dataframe(n_table[n_table["N"] < 10], use_container_width=True)
+    else:
+        n_table = (
+            df_plot.groupby(xcol)[ycol]
+            .count()
+            .reset_index(name="N")
+            .sort_values(xcol)
+        )
+        st.write(f"N by {xcol} (showing {xcol} >= {cutoff})")
+        st.dataframe(n_table[n_table[xcol] >= cutoff], use_container_width=True)
+
+        st.write("Rows where N < 10 (all weeks):")
+        st.dataframe(n_table[n_table["N"] < 10], use_container_width=True)
+
 # Axis defaults
 xmin_d, xmax_d, xstep_d, ymin_d, ymax_d, ystep_d = _compute_axis_defaults(df_plot, xcol, ycol)
 
@@ -205,7 +233,7 @@ with st.sidebar.expander("Axis controls (auto-filled defaults)", expanded=True):
 
 st.title("Neonatal Hemodynamics Dashboard")
 
-# NEW: title textbox with default title shown
+# Title textbox with default title shown
 default_title = f"{ycol} vs {xcol}  (shown N={shownN} / eligible N={eligN} / raw N={rawN})"
 plot_title = st.sidebar.text_input("Plot title", value=default_title)
 
@@ -242,7 +270,7 @@ if gcol:
         if info is not None:
             band_infos.append(info)
 
-    # NEW: overlap shading (mixed color)
+    # overlap shading (mixed color)
     if show_sd and len(band_infos) >= 2:
         for a, b in itertools.combinations(band_infos, 2):
             dfa = pd.DataFrame({"x": a["x"], "la": a["lower"], "ua": a["upper"]})
@@ -302,6 +330,6 @@ st.sidebar.download_button(
     file_name="neonatal_plot.png",
     mime="image/png",
 )
+
 # Use container width so it looks consistent in Streamlit
 st.pyplot(fig, use_container_width=True)
-
