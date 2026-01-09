@@ -8,8 +8,9 @@ import io
 
 st.set_page_config(page_title="Neonatal Dashboard", layout="wide")
 
-MIN_N_PER_POINT = 10          # Shashank: omit points with <10 samples
-TITLE_PAD = 18                # add whitespace between title and top tick labels
+MIN_N_PER_POINT = 10          # Shashank: omit points/categories with <10 samples
+TITLE_PAD = 18                # whitespace between title and top tick labels
+DISCRETE_NUNIQUE_THRESHOLD = 20  # if X has <= this many unique values -> bar chart
 
 
 def _nice_step(vmin: float, vmax: float) -> float:
@@ -43,7 +44,34 @@ def _mix_colors(c1, c2):
     return tuple((r1 + r2) / 2.0)
 
 
-def _plot_series(
+def _is_intlike(series: pd.Series) -> bool:
+    s = pd.to_numeric(series, errors="coerce").dropna().to_numpy(dtype=float)
+    if s.size == 0:
+        return False
+    return bool(np.all(np.isclose(s, np.round(s))))
+
+
+def _is_discrete_x(df_plot: pd.DataFrame, xcol: str) -> bool:
+    """
+    Decide whether X should be treated as discrete (bar chart) vs continuous (line chart).
+    Rule: if few unique values (<= threshold) OR integer-like binned data with modest range.
+    """
+    x = pd.to_numeric(df_plot[xcol], errors="coerce").dropna()
+    nunique = int(x.nunique(dropna=True))
+
+    if nunique <= DISCRETE_NUNIQUE_THRESHOLD:
+        return True
+
+    if _is_intlike(x):
+        rng = float(x.max() - x.min()) if x.size else 0.0
+        # if it's basically "binned" and not too wide, treat as discrete
+        if nunique <= 50 and rng <= 80:
+            return True
+
+    return False
+
+
+def _plot_series_line(
     ax,
     sub_df: pd.DataFrame,
     xcol: str,
@@ -53,7 +81,7 @@ def _plot_series(
     color: str | None = None,
     linestyle: str = "-",
     marker: str | None = None,
-    min_n: int = MIN_N_PER_POINT,   # NEW: omit if N < min_n
+    min_n: int = MIN_N_PER_POINT,
 ):
     # Compute mean/std and also sample count N
     agg = (
@@ -63,11 +91,9 @@ def _plot_series(
         .sort_values(xcol)
     )
 
-    # Shashank: omit points with small sample size
-    # IMPORTANT: we DROP the rows (not NaN) so the line stays connected (no broken gaps)
+    # Omit points with small sample size (DROP rows so the line stays connected)
     agg = agg[agg["n"] >= int(min_n)].copy()
 
-    # If nothing left to plot, return
     if agg.empty:
         return None
 
@@ -75,29 +101,25 @@ def _plot_series(
     ym = agg["mean"].to_numpy(dtype=float)
     ys = agg["std"].to_numpy(dtype=float)
 
-    # Capture the line so we can read its true color even when color=None
     (ln,) = ax.plot(
         xv, ym,
         linewidth=2.5,
         label=label,
-        color=color,          # if None, matplotlib auto-assigns
+        color=color,
         linestyle=linestyle,
         marker=marker,
         markersize=4 if marker else 0,
-        markevery=max(1, len(xv)//12),
+        markevery=max(1, len(xv) // 12),
         zorder=3
     )
 
-    # Band must match line color (even when color=None)
     line_color = ln.get_color() if color is None else color
 
     band_info = None
     if show_sd:
         lower = ym - ys
         upper = ym + ys
-
-        # Only fill where SD is finite (std can be NaN if something weird slips through)
-        finite = np.isfinite(lower) & np.isfinite(upper) & np.isfinite(xv)
+        finite = np.isfinite(xv) & np.isfinite(lower) & np.isfinite(upper)
         ax.fill_between(
             xv, lower, upper,
             where=finite,
@@ -109,6 +131,131 @@ def _plot_series(
         band_info = {"x": xv, "lower": lower, "upper": upper, "color": line_color, "label": label}
 
     return band_info
+
+
+def _plot_bars_with_sd(
+    ax,
+    df_plot: pd.DataFrame,
+    xcol: str,
+    ycol: str,
+    gcol: str | None,
+    show_sd: bool,
+    bw_mode: bool,
+    min_n: int = MIN_N_PER_POINT,
+):
+    """
+    Bar chart for discrete X: mean with SD error bars.
+    Omit categories where N < min_n (per group per category).
+    """
+    if gcol:
+        stats = (
+            df_plot.groupby([gcol, xcol])[ycol]
+            .agg(mean="mean", std="std", n="count")
+            .reset_index()
+        )
+        stats = stats[stats["n"] >= int(min_n)].copy()
+        if stats.empty:
+            return
+
+        x_vals = np.sort(stats[xcol].unique())
+        groups = list(stats[gcol].dropna().unique())
+
+        k = max(len(groups), 1)
+        base = np.arange(len(x_vals))
+        bar_w = 0.8 / k
+
+        hatches = ["///", "\\\\\\", "xx", "..", "++", "--", "oo", "**"]
+
+        for j, gv in enumerate(groups):
+            sub = stats[stats[gcol] == gv].set_index(xcol)
+
+            means = np.array([sub.at[x, "mean"] if x in sub.index else np.nan for x in x_vals], dtype=float)
+            sds = np.array([sub.at[x, "std"] if x in sub.index else np.nan for x in x_vals], dtype=float)
+
+            x_pos = base + (j - (k - 1) / 2.0) * bar_w
+            finite = np.isfinite(means)
+
+            if not np.any(finite):
+                continue
+
+            yerr = sds[finite] if show_sd else None
+
+            if bw_mode:
+                ax.bar(
+                    x_pos[finite], means[finite],
+                    width=bar_w,
+                    yerr=yerr,
+                    capsize=3 if show_sd else 0,
+                    color="white",
+                    edgecolor="black",
+                    hatch=hatches[j % len(hatches)],
+                    linewidth=1.0,
+                    label=str(gv),
+                    zorder=3
+                )
+            else:
+                ax.bar(
+                    x_pos[finite], means[finite],
+                    width=bar_w,
+                    yerr=yerr,
+                    capsize=3 if show_sd else 0,
+                    label=str(gv),
+                    zorder=3
+                )
+
+        ax.set_xticks(base)
+        if _is_intlike(pd.Series(x_vals)):
+            ax.set_xticklabels([str(int(v)) for v in x_vals])
+        else:
+            ax.set_xticklabels([str(v) for v in x_vals])
+
+    else:
+        stats = (
+            df_plot.groupby(xcol)[ycol]
+            .agg(mean="mean", std="std", n="count")
+            .reset_index()
+            .sort_values(xcol)
+        )
+        stats = stats[stats["n"] >= int(min_n)].copy()
+        if stats.empty:
+            return
+
+        x_vals = stats[xcol].to_numpy(dtype=float)
+        means = stats["mean"].to_numpy(dtype=float)
+        sds = stats["std"].to_numpy(dtype=float)
+
+        base = np.arange(len(x_vals))
+        yerr = sds if show_sd else None
+
+        if bw_mode:
+            ax.bar(
+                base, means,
+                yerr=yerr,
+                capsize=3 if show_sd else 0,
+                color="white",
+                edgecolor="black",
+                linewidth=1.0,
+                zorder=3
+            )
+        else:
+            ax.bar(
+                base, means,
+                yerr=yerr,
+                capsize=3 if show_sd else 0,
+                zorder=3
+            )
+
+        ax.set_xticks(base)
+        if _is_intlike(pd.Series(x_vals)):
+            ax.set_xticklabels([str(int(v)) for v in x_vals])
+        else:
+            ax.set_xticklabels([str(v) for v in x_vals])
+
+    # rotate if many categories
+    if len(ax.get_xticklabels()) > 12:
+        for t in ax.get_xticklabels():
+            t.set_rotation(45)
+            t.set_ha("right")
 
 
 st.sidebar.header("Controls")
@@ -149,7 +296,7 @@ bw_mode = st.sidebar.checkbox("B/W print mode (use line styles + markers)", valu
 group_choice = st.sidebar.selectbox("Group (optional)", ["(None)"] + group_cols, index=0)
 gcol = None if group_choice == "(None)" else group_choice
 
-show_sd = st.sidebar.checkbox("Show SD band", value=True)
+show_sd = st.sidebar.checkbox("Show SD", value=True)
 show_legend = st.sidebar.checkbox("Show legend (outside)", value=True)
 
 apply_axes = st.sidebar.checkbox("Apply axis controls", value=False)
@@ -231,6 +378,11 @@ st.title("Neonatal Hemodynamics Dashboard")
 default_title = f"{ycol} vs {xcol}  (shown N={shownN} / eligible N={eligN} / raw N={rawN})"
 plot_title = st.sidebar.text_input("Plot title", value=default_title)
 
+# Decide plot type automatically:
+# - discrete X -> bar chart with SD error bars
+# - continuous X -> line chart with SD band
+use_bar = _is_discrete_x(df_plot, xcol)
+
 # ===== FIXED LAYOUT: plot + legend in separate fixed panels =====
 fig = plt.figure(figsize=(11, 5))
 gs = fig.add_gridspec(1, 2, width_ratios=[4.8, 1.6], wspace=0.02)
@@ -245,79 +397,99 @@ ax.spines["right"].set_visible(False)
 
 band_infos = []
 
-if gcol:
-    linestyles = ["-", "--", ":", "-."]
-    markers = ["o", "s", "^", "D", "X", "P", "v"]
-
-    groups = list(df_plot.groupby(gcol))
-    for i, (gval, gdf) in enumerate(groups):
-        ls = linestyles[i % len(linestyles)]
-        mk = markers[i % len(markers)]
-
-        if bw_mode:
-            info = _plot_series(
-                ax, gdf, xcol, ycol, show_sd, label=str(gval),
-                color="black", linestyle=ls, marker=mk,
-                min_n=MIN_N_PER_POINT
-            )
-        else:
-            info = _plot_series(
-                ax, gdf, xcol, ycol, show_sd, label=str(gval),
-                color=None, linestyle=ls, marker=None,
-                min_n=MIN_N_PER_POINT
-            )
-
-        if info is not None:
-            band_infos.append(info)
-
-    # overlap shading (mixed color)
-    if show_sd and len(band_infos) >= 2:
-        for a, b in itertools.combinations(band_infos, 2):
-            dfa = pd.DataFrame({"x": a["x"], "la": a["lower"], "ua": a["upper"]})
-            dfb = pd.DataFrame({"x": b["x"], "lb": b["lower"], "ub": b["upper"]})
-            m = dfa.merge(dfb, on="x", how="inner").sort_values("x")
-            if m.empty:
-                continue
-
-            x = m["x"].to_numpy(dtype=float)
-            lo = np.maximum(m["la"].to_numpy(dtype=float), m["lb"].to_numpy(dtype=float))
-            hi = np.minimum(m["ua"].to_numpy(dtype=float), m["ub"].to_numpy(dtype=float))
-            mask = np.isfinite(lo) & np.isfinite(hi) & (hi > lo)
-
-            if np.any(mask):
-                mix_c = "0.35" if bw_mode else _mix_colors(a["color"], b["color"])
-                ax.fill_between(x, lo, hi, where=mask, color=mix_c, alpha=0.22, linewidth=0, zorder=2)
-
-else:
-    _plot_series(
-        ax, df_plot, xcol, ycol, show_sd, label=None,
-        color="black" if bw_mode else None, linestyle="-", marker=None,
+if use_bar:
+    # BAR CHART for discrete X (GA weeks, scores, categories)
+    _plot_bars_with_sd(
+        ax=ax,
+        df_plot=df_plot,
+        xcol=xcol,
+        ycol=ycol,
+        gcol=gcol,
+        show_sd=show_sd,
+        bw_mode=bw_mode,
         min_n=MIN_N_PER_POINT
     )
+else:
+    # LINE CHART for continuous X (time-like / continuous measurements)
+    if gcol:
+        linestyles = ["-", "--", ":", "-."]
+        markers = ["o", "s", "^", "D", "X", "P", "v"]
 
-# Title padding fix (prevents top tick from crowding the title)
+        groups = list(df_plot.groupby(gcol))
+        for i, (gval, gdf) in enumerate(groups):
+            ls = linestyles[i % len(linestyles)]
+            mk = markers[i % len(markers)]
+
+            if bw_mode:
+                info = _plot_series_line(
+                    ax, gdf, xcol, ycol, show_sd, label=str(gval),
+                    color="black", linestyle=ls, marker=mk,
+                    min_n=MIN_N_PER_POINT
+                )
+            else:
+                info = _plot_series_line(
+                    ax, gdf, xcol, ycol, show_sd, label=str(gval),
+                    color=None, linestyle=ls, marker=None,
+                    min_n=MIN_N_PER_POINT
+                )
+
+            if info is not None:
+                band_infos.append(info)
+
+        # overlap shading (mixed color) only for line SD bands
+        if show_sd and len(band_infos) >= 2:
+            for a, b in itertools.combinations(band_infos, 2):
+                dfa = pd.DataFrame({"x": a["x"], "la": a["lower"], "ua": a["upper"]})
+                dfb = pd.DataFrame({"x": b["x"], "lb": b["lower"], "ub": b["upper"]})
+                m = dfa.merge(dfb, on="x", how="inner").sort_values("x")
+                if m.empty:
+                    continue
+
+                x = m["x"].to_numpy(dtype=float)
+                lo = np.maximum(m["la"].to_numpy(dtype=float), m["lb"].to_numpy(dtype=float))
+                hi = np.minimum(m["ua"].to_numpy(dtype=float), m["ub"].to_numpy(dtype=float))
+                mask = np.isfinite(lo) & np.isfinite(hi) & (hi > lo)
+
+                if np.any(mask):
+                    mix_c = "0.35" if bw_mode else _mix_colors(a["color"], b["color"])
+                    ax.fill_between(x, lo, hi, where=mask, color=mix_c, alpha=0.22, linewidth=0, zorder=2)
+
+    else:
+        _plot_series_line(
+            ax, df_plot, xcol, ycol, show_sd, label=None,
+            color="black" if bw_mode else None, linestyle="-", marker=None,
+            min_n=MIN_N_PER_POINT
+        )
+
+# Title padding fix
 ax.set_title(plot_title, pad=TITLE_PAD)
 ax.set_xlabel(xcol)
 ax.set_ylabel(ycol)
 
 if apply_axes:
+    # For bar charts, X is categorical positions (0..k-1), so X axis numeric controls don't apply.
+    # We still allow Y axis controls for both.
     errors = []
-    if not (xmax > xmin):
-        errors.append("X max must be > X min")
     if not (ymax > ymin):
         errors.append("Y max must be > Y min")
-    if not (xstep > 0):
-        errors.append("X step must be > 0")
     if not (ystep > 0):
         errors.append("Y step must be > 0")
+
+    if (not use_bar):
+        if not (xmax > xmin):
+            errors.append("X max must be > X min")
+        if not (xstep > 0):
+            errors.append("X step must be > 0")
 
     if errors:
         st.warning("Axis controls invalid:\n- " + "\n- ".join(errors))
     else:
-        ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
-        ax.set_xticks(np.arange(xmin, xmax + xstep, xstep))
         ax.set_yticks(np.arange(ymin, ymax + ystep, ystep))
+
+        if not use_bar:
+            ax.set_xlim(xmin, xmax)
+            ax.set_xticks(np.arange(xmin, xmax + xstep, xstep))
 
 # Legend goes in fixed right panel (so plot never changes width)
 if gcol and show_legend:
