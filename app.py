@@ -8,8 +8,8 @@ import io
 
 st.set_page_config(page_title="Neonatal Dashboard", layout="wide")
 
-MIN_N_PER_POINT = 10          # Shashank: omit points/categories with <10 samples
-TITLE_PAD = 18                # whitespace between title and top tick labels
+MIN_N_PER_POINT = 10             # Shashank: omit points/categories with <10 samples
+TITLE_PAD = 18                   # whitespace between title and top tick labels
 DISCRETE_NUNIQUE_THRESHOLD = 20  # if X has <= this many unique values -> bar chart
 
 
@@ -282,16 +282,30 @@ def _guess_x(cols):
     return cols[0]
 
 
-def _guess_y(cols):
+def _guess_y(cols, x_default):
+    # Prefer SVC flow, but never return the same as X
     for c in cols:
-        if ("SVC" in str(c)) and ("flow" in str(c)):
+        if ("SVC" in str(c)) and ("flow" in str(c)) and (c != x_default):
             return c
-    return cols[1] if len(cols) > 1 else cols[0]
+    # otherwise pick the first different column
+    for c in cols:
+        if c != x_default:
+            return c
+    return cols[0]
 
 
-xcol = st.sidebar.selectbox("X-axis", numeric_cols, index=numeric_cols.index(_guess_x(numeric_cols)))
-ycol = st.sidebar.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(_guess_y(numeric_cols)))
+x_default = _guess_x(numeric_cols)
+y_default = _guess_y(numeric_cols, x_default)
+
+xcol = st.sidebar.selectbox("X-axis", numeric_cols, index=numeric_cols.index(x_default))
+ycol = st.sidebar.selectbox("Y-axis", numeric_cols, index=numeric_cols.index(y_default))
 bw_mode = st.sidebar.checkbox("B/W print mode (use line styles + markers)", value=False)
+
+# --- Guardrail: stop cleanly if X and Y are the same (prevents the big traceback) ---
+if xcol == ycol:
+    st.warning("X and Y can’t be the same. Choose two different variables.")
+    st.stop()
+# -------------------------------------------------------------------------------
 
 group_choice = st.sidebar.selectbox("Group (optional)", ["(None)"] + group_cols, index=0)
 gcol = None if group_choice == "(None)" else group_choice
@@ -309,7 +323,7 @@ rawN = int(df_raw.shape[0])
 eligN = int(df_eligible.shape[0])
 
 if eligN == 0:
-    st.error("No rows have non-missing values for your selected X/Y (and Group, if chosen).")
+    st.error("No rows have non-missing values for the selected fields.")
     st.stop()
 
 # Max N slider reflects what can actually be shown
