@@ -12,6 +12,9 @@ MIN_N_PER_POINT = 10             # Shashank: omit points/categories with <10 sam
 TITLE_PAD = 18                   # whitespace between title and top tick labels
 DISCRETE_NUNIQUE_THRESHOLD = 20  # if X has <= this many unique values -> bar chart
 
+# Raw GitHub URL to the CSV (no upload step needed)
+GITHUB_CSV_URL = "https://raw.githubusercontent.com/Anzarkhan273/sharp-neonatal-dashboard/main/REDCAallPatientsDATA.csv"
+
 
 def _nice_step(vmin: float, vmax: float) -> float:
     """Return a human-friendly tick step (~10 ticks across the axis)."""
@@ -30,8 +33,9 @@ def _compute_axis_defaults(df_plot: pd.DataFrame, xcol: str, ycol: str):
     return xmin, xmax, _nice_step(xmin, xmax), ymin, ymax, _nice_step(ymin, ymax)
 
 
-def _load_csv(uploaded_file) -> pd.DataFrame:
-    df = pd.read_csv(uploaded_file)
+@st.cache_data
+def _load_csv_from_url(url: str) -> pd.DataFrame:
+    df = pd.read_csv(url)
     df.columns = [c.strip() if isinstance(c, str) else c for c in df.columns]
     df = df.loc[:, ~df.columns.duplicated()]
     return df
@@ -259,13 +263,14 @@ def _plot_bars_with_sd(
 
 
 st.sidebar.header("Controls")
-uploaded = st.sidebar.file_uploader("Upload CSV", type=["csv"])
 
-if uploaded is None:
-    st.info("Upload your CSV (e.g., REDCAallPatientsDATA.csv) to begin.")
+# --- Load data directly from GitHub (no upload step) ---
+try:
+    df_raw = _load_csv_from_url(GITHUB_CSV_URL)
+except Exception as e:
+    st.error(f"Could not load data from GitHub:\n\n{e}")
     st.stop()
-
-df_raw = _load_csv(uploaded)
+# ---------------------------------------------------------
 
 numeric_cols = [c for c in df_raw.columns if pd.api.types.is_numeric_dtype(df_raw[c])]
 if len(numeric_cols) < 2:
